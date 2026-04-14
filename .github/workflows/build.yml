@@ -1,0 +1,32 @@
+name: Build XRayCore DLL
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+
+      - name: Build DLL
+        run: |
+          cd XRay-Wrapper
+          set GOOS=windows
+          set GOARCH=amd64
+          go get github.com/xtls/xray-core@latest
+          go mod tidy
+          go build --buildmode=c-shared -o XRayCore.dll
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XRayCore
+          path: XRay-Wrapper/XRayCore.dll
