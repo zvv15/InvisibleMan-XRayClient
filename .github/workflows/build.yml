@@ -20,7 +20,25 @@ jobs:
           go-version: '1.21'
           cache: true
           cache-dependency-path: XRay-Wrapper/go.mod
+          
+      - name: Show repository structure
+        shell: pwsh
+        run: |
+          Write-Host "===== ROOT ====="
+          Get-ChildItem
 
+          Write-Host ""
+          Write-Host "===== SOLUTION FILES ====="
+          Get-ChildItem -Recurse -Filter *.sln
+
+          Write-Host ""
+          Write-Host "===== CSPROJ FILES ====="
+          Get-ChildItem -Recurse -Filter *.csproj
+
+          Write-Host ""
+          Write-Host "===== XRay-Wrapper ====="
+          Get-ChildItem XRay-Wrapper
+          
       - name: Build XRayCore DLL
         working-directory: XRay-Wrapper
         shell: pwsh
