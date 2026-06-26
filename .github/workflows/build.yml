@@ -1,22 +1,102 @@
-name: Repository diagnostics
+name: Build InvisibleMan Test
 
 on:
   workflow_dispatch:
 
 jobs:
-  diagnose:
+  build:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show repository structure
+      # -----------------------------
+      # Show repository structure
+      # -----------------------------
+      - name: Repository info
         shell: pwsh
         run: |
-          Write-Host "===== SOLUTION FILES ====="
-          Get-ChildItem -Recurse -Filter *.sln | Select-Object FullName
+          Write-Host "===== ROOT ====="
+          Get-ChildItem
 
           Write-Host ""
-          Write-Host "===== CSPROJ FILES ====="
-          Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
+          Write-Host "===== SOLUTION ====="
+          Get-ChildItem -Recurse -Filter *.sln
+
+          Write-Host ""
+          Write-Host "===== CSPROJ ====="
+          Get-ChildItem -Recurse -Filter *.csproj
+
+      # -----------------------------
+      # Setup Go
+      # -----------------------------
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache: true
+          cache-dependency-path: XRay-Wrapper/go.mod
+
+      # -----------------------------
+      # Build XRayCore.dll
+      # -----------------------------
+      - name: Build XRayCore.dll
+        working-directory: XRay-Wrapper
+        shell: pwsh
+        run: |
+          $env:GOOS="windows"
+          $env:GOARCH="amd64"
+
+          go version
+          go mod download
+          go build -buildmode=c-shared -o XRayCore.dll
+
+      # -----------------------------
+      # Verify DLL
+      # -----------------------------
+      - name: Check DLL
+        shell: pwsh
+        run: |
+          if (Test-Path "XRay-Wrapper/XRayCore.dll") {
+            Write-Host "XRayCore.dll OK"
+          } else {
+            throw "XRayCore.dll not found!"
+          }
+
+      # -----------------------------
+      # Copy DLL
+      # -----------------------------
+      - name: Copy DLL
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "InvisibleMan-XRay/Libraries"
+          Copy-Item "XRay-Wrapper/XRayCore.dll" "InvisibleMan-XRay/Libraries/"
+
+      # -----------------------------
+      # Setup .NET
+      # -----------------------------
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      # -----------------------------
+      # Restore
+      # -----------------------------
+      - name: Restore
+        run: dotnet restore InvisibleMan-XRay.sln
+
+      # -----------------------------
+      # Build
+      # -----------------------------
+      - name: Build
+        run: dotnet build InvisibleMan-XRay.sln -c Release --no-restore
+
+      # -----------------------------
+      # Show Release output
+      # -----------------------------
+      - name: Show build output
+        shell: pwsh
+        run: |
+          Get-ChildItem -Recurse InvisibleMan-XRay/bin
