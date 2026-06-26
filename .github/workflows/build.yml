@@ -14,37 +14,9 @@ jobs:
       - name: Show repository structure
         shell: pwsh
         run: |
-          Write-Host "===== CURRENT DIRECTORY ====="
-          Get-Location
-
-          Write-Host ""
-          Write-Host "===== ROOT ====="
-          Get-ChildItem -Force
-
-          Write-Host ""
           Write-Host "===== SOLUTION FILES ====="
           Get-ChildItem -Recurse -Filter *.sln | Select-Object FullName
 
           Write-Host ""
           Write-Host "===== CSPROJ FILES ====="
           Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
-
-          Write-Host ""
-          Write-Host "===== GO MODULES ====="
-          Get-ChildItem -Recurse -Filter go.mod | Select-Object FullName
-
-          Write-Host ""
-          Write-Host "===== XRay-Wrapper ====="
-          if (Test-Path "XRay-Wrapper") {
-            Get-ChildItem XRay-Wrapper -Force
-          } else {
-            Write-Host "XRay-Wrapper not found"
-          }
-
-          Write-Host ""
-          Write-Host "===== InvisibleMan-XRay ====="
-          if (Test-Path "InvisibleMan-XRay") {
-            Get-ChildItem InvisibleMan-XRay -Force
-          } else {
-            Write-Host "InvisibleMan-XRay not found"
-          }
