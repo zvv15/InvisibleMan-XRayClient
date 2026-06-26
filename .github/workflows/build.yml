@@ -1,101 +1,50 @@
-name: Build InvisibleMan Full Client
+name: Repository diagnostics
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  diagnose:
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # =====================
-      # GO (XRayCore.dll)
-      # =====================
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.21'
-          cache: true
-          cache-dependency-path: XRay-Wrapper/go.mod
-          
       - name: Show repository structure
         shell: pwsh
         run: |
+          Write-Host "===== CURRENT DIRECTORY ====="
+          Get-Location
+
+          Write-Host ""
           Write-Host "===== ROOT ====="
-          Get-ChildItem
+          Get-ChildItem -Force
 
           Write-Host ""
           Write-Host "===== SOLUTION FILES ====="
-          Get-ChildItem -Recurse -Filter *.sln
+          Get-ChildItem -Recurse -Filter *.sln | Select-Object FullName
 
           Write-Host ""
           Write-Host "===== CSPROJ FILES ====="
-          Get-ChildItem -Recurse -Filter *.csproj
+          Get-ChildItem -Recurse -Filter *.csproj | Select-Object FullName
+
+          Write-Host ""
+          Write-Host "===== GO MODULES ====="
+          Get-ChildItem -Recurse -Filter go.mod | Select-Object FullName
 
           Write-Host ""
           Write-Host "===== XRay-Wrapper ====="
-          Get-ChildItem XRay-Wrapper
-          
-      - name: Build XRayCore DLL
-        working-directory: XRay-Wrapper
-        shell: pwsh
-        run: |
-          $env:GOOS="windows"
-          $env:GOARCH="amd64"
+          if (Test-Path "XRay-Wrapper") {
+            Get-ChildItem XRay-Wrapper -Force
+          } else {
+            Write-Host "XRay-Wrapper not found"
+          }
 
-          go mod download
-          go build -buildmode=c-shared -o XRayCore.dll
-
-      - name: Copy DLL to client
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "InvisibleMan-XRay/Libraries"
-          Copy-Item XRay-Wrapper/XRayCore.dll InvisibleMan-XRay/Libraries/
-
-      # =====================
-      # .NET BUILD (EXE)
-      # =====================
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-
-      - name: Restore
-        run: dotnet restore InvisibleMan-XRayClient.sln
-
-      - name: Build Release
-        run: dotnet build InvisibleMan-XRayClient.sln -c Release --no-restore
-
-      # =====================
-      # PUBLISH (EXE OUTPUT)
-      # =====================
-      - name: Publish
-        run: |
-          dotnet publish InvisibleMan-XRayClient.sln -c Release -o publish
-
-      # =====================
-      # PACKAGE
-      # =====================
-      - name: Collect files
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path "package"
-
-          Copy-Item publish\* package\ -Recurse
-
-      - name: Zip release
-        shell: pwsh
-        run: |
-          Compress-Archive -Path package\* -DestinationPath InvisibleMan-XRayClient.zip -Force
-
-      # =====================
-      # ARTIFACT
-      # =====================
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: InvisibleMan-XRayClient
-          path: InvisibleMan-XRayClient.zip
+          Write-Host ""
+          Write-Host "===== InvisibleMan-XRay ====="
+          if (Test-Path "InvisibleMan-XRay") {
+            Get-ChildItem InvisibleMan-XRay -Force
+          } else {
+            Write-Host "InvisibleMan-XRay not found"
+          }
