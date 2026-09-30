@@ -14,7 +14,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.26.x'
+          go-version: '1.27.x'
           cache: true
           cache-dependency-path: XRay-Wrapper/go.mod
 
@@ -24,8 +24,15 @@ jobs:
         run: |
           go version
 
-          go get github.com/xtls/xray-core@master
+          go get github.com/xtls/xray-core@main
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           go mod tidy
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
           Write-Host "===== Xray version in go.mod ====="
           Select-String "github.com/xtls/xray-core" go.mod
@@ -43,8 +50,12 @@ jobs:
             -ldflags="-s -w -buildid=" `
             -o XRayCore.dll .
 
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XRayCore-test
+          name: XRayCore-current
           path: XRay-Wrapper/XRayCore.dll
