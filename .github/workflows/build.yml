@@ -18,14 +18,22 @@ jobs:
           cache: true
           cache-dependency-path: XRay-Wrapper/go.mod
 
-      - name: Build DLL
+      - name: Update Xray core
         working-directory: XRay-Wrapper
         shell: pwsh
         run: |
           go version
 
+          go get github.com/xtls/xray-core@master
           go mod tidy
 
+          Write-Host "===== Xray version in go.mod ====="
+          Select-String "github.com/xtls/xray-core" go.mod
+
+      - name: Build DLL
+        working-directory: XRay-Wrapper
+        shell: pwsh
+        run: |
           $env:GOOS="windows"
           $env:GOARCH="amd64"
 
@@ -38,5 +46,5 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: XRayCore-v26.7.28
+          name: XRayCore-test
           path: XRay-Wrapper/XRayCore.dll
