@@ -4,7 +4,7 @@ go 1.26
 
 toolchain go1.26.0
 
-require github.com/xtls/xray-core v26.7.28
+require github.com/xtls/xray-core v1.8.25-0.20250130105737-0a8470cb14eb
 
 require (
 	github.com/OmarTariq612/goech v0.0.0-20240405204721-8e2e1dafd3a0 // indirect
