@@ -3,6 +3,9 @@ name: Build XRayCore DLL
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
@@ -18,22 +21,11 @@ jobs:
           cache: true
           cache-dependency-path: XRay-Wrapper/go.mod
 
-      - name: Update Xray core
+      - name: Verify Xray version
         working-directory: XRay-Wrapper
         shell: pwsh
         run: |
           go version
-
-          go get github.com/xtls/xray-core@main
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
-          go mod tidy
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
           Write-Host "===== Xray version in go.mod ====="
           Select-String "github.com/xtls/xray-core" go.mod
 
@@ -41,6 +33,11 @@ jobs:
         working-directory: XRay-Wrapper
         shell: pwsh
         run: |
+          go mod tidy
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+
           $env:GOOS="windows"
           $env:GOARCH="amd64"
 
