@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -50,6 +50,29 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             exit $LASTEXITCODE
           }
+
+      - name: Install XRayCore.dll into client
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "InvisibleMan-XRay/Libraries" | Out-Null
+          Copy-Item "XRay-Wrapper/XRayCore.dll" "InvisibleMan-XRay/Libraries/XRayCore.dll" -Force
+
+      - name: Commit updated Xray core
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add "XRay-Wrapper/go.sum"
+          git add -f "InvisibleMan-XRay/Libraries/XRayCore.dll"
+
+          if (git diff --cached --quiet) {
+            Write-Host "No repository changes to commit."
+            exit 0
+          }
+
+          git commit -m "Update bundled Xray core"
+          git push
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
