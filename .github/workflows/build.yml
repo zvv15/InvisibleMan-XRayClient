@@ -6,58 +6,70 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: build-xraycore-dll
+  cancel-in-progress: false
+
 jobs:
   build:
+    name: Build Windows x64 XRayCore.dll
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Setup Go
+      - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
           cache: true
           cache-dependency-path: XRay-Wrapper/go.mod
 
-      - name: Verify Xray version
-        working-directory: XRay-Wrapper
+      - name: Show Go version
         shell: pwsh
-        run: |
-          go version
-          Write-Host "===== Xray version in go.mod ====="
-          Select-String "github.com/xtls/xray-core" go.mod
+        run: go version
 
-      - name: Build DLL
-        working-directory: XRay-Wrapper
+      - name: Update Go dependencies
         shell: pwsh
+        working-directory: XRay-Wrapper
         run: |
           go mod tidy
           if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
+              throw "go mod tidy failed"
           }
 
-          $env:GOOS = "windows"
-          $env:GOARCH = "amd64"
-
-          go build `
-            -trimpath `
-            -buildmode=c-shared `
-            -ldflags="-s -w -buildid=" `
-            -o XRayCore.dll .
-
+      - name: Build XRayCore.dll
+        shell: pwsh
+        working-directory: XRay-Wrapper
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: '1'
+        run: |
+          go build -trimpath -buildmode=c-shared -ldflags="-s -w -buildid=" -o XRayCore.dll .
           if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
+              throw "XRayCore.dll build failed"
           }
 
-      - name: Install XRayCore.dll into client
+      - name: Install DLL into application
         shell: pwsh
         run: |
-          New-Item -ItemType Directory -Force -Path "InvisibleMan-XRay/Libraries" | Out-Null
-          Copy-Item "XRay-Wrapper/XRayCore.dll" "InvisibleMan-XRay/Libraries/XRayCore.dll" -Force
+          $source = "XRay-Wrapper/XRayCore.dll"
+          $destination = "InvisibleMan-XRay/Libraries/XRayCore.dll"
+
+          if (-not (Test-Path $source)) {
+              throw "Built DLL not found: $source"
+          }
+
+          if (-not (Test-Path "InvisibleMan-XRay/Libraries")) {
+              throw "Application Libraries directory not found"
+          }
+
+          Copy-Item $source $destination -Force
+          Write-Host "DLL copied to $destination"
 
       - name: Commit updated Xray core
         shell: pwsh
@@ -69,33 +81,54 @@ jobs:
           git add "XRay-Wrapper/go.sum"
           git add -f "InvisibleMan-XRay/Libraries/XRayCore.dll"
 
-          if (git diff --cached --quiet) {
-              Write-Host "No repository changes to commit."
-          } else {
+          Write-Host "Git status before commit:"
+          git status --short
+
+          if (-not (git diff --cached --quiet)) {
               git commit -m "Update bundled Xray core"
               if ($LASTEXITCODE -ne 0) {
-                  exit $LASTEXITCODE
+                  throw "Git commit failed"
               }
+          } else {
+              Write-Host "No staged changes to commit"
           }
 
+          # Check for other tracked modifications that could block rebase.
+          $status = git status --porcelain
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not inspect Git status"
+          }
+
+          if ($status) {
+              Write-Host "Remaining working-tree changes:"
+              Write-Host $status
+              throw "Working tree is not clean. Check the files listed above."
+          }
+
+      - name: Sync with latest master and push
+        shell: pwsh
+        run: |
           git fetch origin master
           if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
+              throw "Git fetch failed"
           }
 
           git rebase origin/master
           if ($LASTEXITCODE -ne 0) {
-              Write-Error "Rebase failed. Check for conflicts before retrying."
-              exit $LASTEXITCODE
+              throw "Rebase failed. Check the conflict details in the log."
           }
 
           git push origin HEAD:master
           if ($LASTEXITCODE -ne 0) {
-              exit $LASTEXITCODE
+              throw "Git push failed"
           }
 
-      - name: Upload artifact
+      - name: Upload XRayCore.dll artifact
         uses: actions/upload-artifact@v4
         with:
           name: XRayCore-current
-          path: XRay-Wrapper/XRayCore.dll
+          path: |
+            XRay-Wrapper/XRayCore.dll
+            XRay-Wrapper/XRayCore.h
+          if-no-files-found: warn
+          retention-days: 30
