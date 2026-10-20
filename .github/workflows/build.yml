@@ -1,4 +1,3 @@
-```yaml
 name: Build XRayCore DLL
 
 on:
@@ -99,4 +98,3 @@ jobs:
         with:
           name: XRayCore-current
           path: XRay-Wrapper/XRayCore.dll
-```
