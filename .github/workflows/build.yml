@@ -1,3 +1,4 @@
+```yaml
 name: Build XRayCore DLL
 
 on:
@@ -13,6 +14,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -35,11 +38,11 @@ jobs:
         run: |
           go mod tidy
           if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+              exit $LASTEXITCODE
           }
 
-          $env:GOOS="windows"
-          $env:GOARCH="amd64"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
 
           go build `
             -trimpath `
@@ -48,7 +51,7 @@ jobs:
             -o XRayCore.dll .
 
           if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+              exit $LASTEXITCODE
           }
 
       - name: Install XRayCore.dll into client
@@ -67,15 +70,33 @@ jobs:
           git add -f "InvisibleMan-XRay/Libraries/XRayCore.dll"
 
           if (git diff --cached --quiet) {
-            Write-Host "No repository changes to commit."
-            exit 0
+              Write-Host "No repository changes to commit."
+          } else {
+              git commit -m "Update bundled Xray core"
+              if ($LASTEXITCODE -ne 0) {
+                  exit $LASTEXITCODE
+              }
           }
 
-          git commit -m "Update bundled Xray core"
-          git push
+          git fetch origin master
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
+
+          git rebase origin/master
+          if ($LASTEXITCODE -ne 0) {
+              Write-Error "Rebase failed. Check for conflicts before retrying."
+              exit $LASTEXITCODE
+          }
+
+          git push origin HEAD:master
+          if ($LASTEXITCODE -ne 0) {
+              exit $LASTEXITCODE
+          }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: XRayCore-current
           path: XRay-Wrapper/XRayCore.dll
+```
