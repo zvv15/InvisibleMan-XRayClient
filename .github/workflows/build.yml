@@ -2,6 +2,11 @@ name: Build XRayCore DLL
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - 'XRay-Wrapper/go.mod'   # автосборка только при изменении go.mod
 
 permissions:
   contents: write
@@ -53,6 +58,24 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
               throw "XRayCore.dll build failed"
           }
+
+      # Проверяем реальный экспорт из XRay-Wrapper/xray/wrapper.go: //export StartServer
+      - name: Verify DLL exports
+        shell: pwsh
+        run: |
+          $dll = "XRay-Wrapper/XRayCore.dll"
+          $h   = "XRay-Wrapper/XRayCore.h"
+
+          if (-not (Test-Path $dll)) { throw "XRayCore.dll not found" }
+          if (-not (Test-Path $h))   { throw "XRayCore.h not found" }
+
+          $content = Get-Content $h -Raw
+          if ($content -notmatch "StartServer") {
+              throw "Expected export 'StartServer' not found in XRayCore.h"
+          }
+
+          $sizeMB = [math]::Round((Get-Item $dll).Length / 1MB, 2)
+          Write-Host "XRayCore.dll size: $sizeMB MB — export check passed."
 
       - name: Install DLL into application
         shell: pwsh
