@@ -1,8 +1,11 @@
 
-name: Build XRayCore DLL
+name: Build and Release XRayCore
 
 on:
   workflow_dispatch:
+
+  schedule:
+    - cron: '17 4 * * *'
 
   push:
     branches:
@@ -21,32 +24,27 @@ concurrency:
 jobs:
   build:
     if: github.actor != 'github-actions[bot]'
-    name: Build Windows x64 XRayCore.dll
+    name: Build and Release Windows x64 XRayCore
     runs-on: windows-latest
 
     steps:
+      # ==========================================
+      # 1. Checkout
+      # ==========================================
+
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.27.x'
-          cache: true
-          cache-dependency-path: XRay-Wrapper/go.mod
+      # ==========================================
+      # 2. Find latest stable Xray release
+      # ==========================================
 
-      - name: Show Go version
+      - name: Check latest Xray-core release
+        id: latest
         shell: pwsh
         run: |
-          go version
-
-      - name: Update Go dependencies
-        shell: pwsh
-        working-directory: XRay-Wrapper
-        run: |
-          # Получаем последний стабильный релиз Xray-core
           $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/XTLS/Xray-core/releases/latest" `
             -Headers @{
@@ -54,26 +52,45 @@ jobs:
               "Accept" = "application/vnd.github+json"
             }
 
-          $tag = $release.tag_name
+          $tag = [string]$release.tag_name
 
-          if (-not $tag) {
-              throw "Could not determine latest Xray-core release"
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+              throw "Unexpected Xray-core release tag: $tag"
           }
 
-          Write-Host "Latest Xray-core release: $tag"
+          $version = $tag -replace '^v', ''
+          $releaseTag = "xray-$version"
 
-          # Получаем точный Git commit релиза
-          $lines = git ls-remote `
-            https://github.com/XTLS/Xray-core.git `
-            "refs/tags/$tag" `
-            "refs/tags/$tag^{}"
+          Write-Host "Latest upstream release: $tag"
+          Write-Host "Local release tag: $releaseTag"
+
+          # Проверяем, существует ли уже такой Release tag
+          $existingTag = git ls-remote --refs origin "refs/tags/$releaseTag"
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Could not resolve Xray-core tag"
+              throw "Could not check existing release tag"
           }
 
+          if ($existingTag) {
+              Write-Host "Release $releaseTag already exists."
+              Write-Host "Nothing to build."
+
+              "skip=true" >> $env:GITHUB_OUTPUT
+              exit 0
+          }
+
+          # Получаем точный commit upstream-релиза
           $tagRef = "refs/tags/$tag"
           $peeledRef = "$tagRef^{}"
+
+          $lines = git ls-remote `
+              https://github.com/XTLS/Xray-core.git `
+              $tagRef `
+              $peeledRef
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not resolve upstream tag"
+          }
 
           $tagSha = $null
           $commitSha = $null
@@ -91,8 +108,6 @@ jobs:
               }
           }
 
-          # Для аннотированного тега используем peeled commit.
-          # Для обычного тега используем его собственный SHA.
           if (-not $commitSha) {
               $commitSha = $tagSha
           }
@@ -101,23 +116,58 @@ jobs:
               throw "Could not resolve Xray-core commit SHA"
           }
 
-          Write-Host "Xray-core commit: $commitSha"
+          Write-Host "Upstream commit: $commitSha"
 
-          # Обновляем ядро до конкретного коммита релиза
-          go get "github.com/xtls/xray-core@$commitSha"
+          "skip=false" >> $env:GITHUB_OUTPUT
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "upstream_tag=$tag" >> $env:GITHUB_OUTPUT
+          "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
+          "commit_sha=$commitSha" >> $env:GITHUB_OUTPUT
+
+      # ==========================================
+      # 3. Setup Go
+      # ==========================================
+
+      - name: Set up Go
+        if: steps.latest.outputs.skip != 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache: true
+          cache-dependency-path: XRay-Wrapper/go.mod
+
+      - name: Show Go version
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          go version
+
+      # ==========================================
+      # 4. Update Xray-core dependencies
+      # ==========================================
+
+      - name: Update Go dependencies
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        working-directory: XRay-Wrapper
+        env:
+          UPSTREAM_COMMIT: ${{ steps.latest.outputs.commit_sha }}
+          UPSTREAM_TAG: ${{ steps.latest.outputs.upstream_tag }}
+        run: |
+          Write-Host "Updating Xray-core to $env:UPSTREAM_TAG"
+
+          go get "github.com/xtls/xray-core@$env:UPSTREAM_COMMIT"
 
           if ($LASTEXITCODE -ne 0) {
               throw "Xray-core update failed"
           }
 
-          # Обновляем зависимости
           go mod tidy
 
           if ($LASTEXITCODE -ne 0) {
               throw "go mod tidy failed"
           }
 
-          # Проверяем фактически подключённую версию
           Write-Host "===== Installed Xray-core version ====="
 
           go list -m github.com/xtls/xray-core
@@ -126,9 +176,42 @@ jobs:
               throw "Could not verify Xray-core version"
           }
 
-          Write-Host "Successfully updated to $tag"
+      # ==========================================
+      # 5. Tests
+      # ==========================================
+
+      - name: Run Go tests
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        working-directory: XRay-Wrapper
+        run: |
+          go test ./...
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Go tests failed"
+          }
+
+          Write-Host "All Go tests passed."
+
+      - name: Run Go vet
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        working-directory: XRay-Wrapper
+        run: |
+          go vet ./...
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Go vet failed"
+          }
+
+          Write-Host "Go vet passed."
+
+      # ==========================================
+      # 6. Build DLL
+      # ==========================================
 
       - name: Build XRayCore.dll
+        if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         working-directory: XRay-Wrapper
         env:
@@ -146,7 +229,14 @@ jobs:
               throw "XRayCore.dll build failed"
           }
 
-      - name: Verify DLL file
+          Write-Host "DLL build completed."
+
+      # ==========================================
+      # 7. Verify DLL
+      # ==========================================
+
+      - name: Verify XRayCore.dll
+        if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           $dll = "XRay-Wrapper/XRayCore.dll"
@@ -155,26 +245,62 @@ jobs:
               throw "XRayCore.dll not found"
           }
 
-          $sizeMB = [math]::Round(
-              (Get-Item $dll).Length / 1MB, 2
-          )
+          $file = Get-Item $dll
+          $sizeMB = [math]::Round($file.Length / 1MB, 2)
 
-          Write-Host "XRayCore.dll size: $sizeMB MB"
+          Write-Host "DLL size: $sizeMB MB"
 
-          if ($sizeMB -lt 5) {
-              throw "XRayCore.dll is suspiciously small"
+          if ($file.Length -lt 5MB) {
+              throw "DLL is suspiciously small"
           }
 
-          Write-Host "DLL size check passed."
+          # Проверка PE-заголовка
+          $bytes = [System.IO.File]::ReadAllBytes($dll)
+
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+              throw "Invalid Windows executable header"
+          }
+
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+
+          if ($peOffset -lt 0 -or ($peOffset + 6) -gt $bytes.Length) {
+              throw "Invalid PE header offset"
+          }
+
+          if (
+              $bytes[$peOffset] -ne 0x50 -or
+              $bytes[$peOffset + 1] -ne 0x45 -or
+              $bytes[$peOffset + 2] -ne 0x00 -or
+              $bytes[$peOffset + 3] -ne 0x00
+          ) {
+              throw "Invalid PE signature"
+          }
+
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+
+          if ($machine -ne 0x8664) {
+              throw "DLL is not Windows x64"
+          }
+
+          $hash = (Get-FileHash $dll -Algorithm SHA256).Hash
+
+          Write-Host "Architecture: Windows x64"
+          Write-Host "SHA256: $hash"
+          Write-Host "DLL verification passed."
+
+      # ==========================================
+      # 8. Copy DLL to application
+      # ==========================================
 
       - name: Install DLL into application
+        if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           $source = "XRay-Wrapper/XRayCore.dll"
           $destination = "InvisibleMan-XRay/Libraries/XRayCore.dll"
 
           if (-not (Test-Path $source)) {
-              throw "Built DLL not found: $source"
+              throw "Source DLL not found"
           }
 
           if (-not (Test-Path "InvisibleMan-XRay/Libraries")) {
@@ -183,9 +309,66 @@ jobs:
 
           Copy-Item $source $destination -Force
 
-          Write-Host "DLL copied to $destination"
+          Write-Host "DLL installed into application."
+
+      # ==========================================
+      # 9. Create ZIP archive
+      # ==========================================
+
+      - name: Create release archive
+        id: package
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          CORE_VERSION: ${{ steps.latest.outputs.version }}
+        run: |
+          $source = "XRay-Wrapper/XRayCore.dll"
+          $archive = Join-Path `
+              $env:RUNNER_TEMP `
+              "XRayCore.$env:CORE_VERSION.zip"
+
+          if (-not (Test-Path $source)) {
+              throw "DLL not found for packaging"
+          }
+
+          Compress-Archive `
+              -LiteralPath $source `
+              -DestinationPath $archive `
+              -CompressionLevel Optimal `
+              -Force
+
+          if (-not (Test-Path $archive)) {
+              throw "ZIP archive was not created"
+          }
+
+          if ((Get-Item $archive).Length -lt 1KB) {
+              throw "ZIP archive is invalid or too small"
+          }
+
+          Write-Host "Created archive: $archive"
+
+          "archive_path=$archive" >> $env:GITHUB_OUTPUT
+
+      # ==========================================
+      # 10. Upload Actions artifact
+      # ==========================================
+
+      - name: Upload XRayCore artifact
+        if: steps.latest.outputs.skip != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: XRayCore-${{ steps.latest.outputs.version }}
+          path: ${{ steps.package.outputs.archive_path }}
+          if-no-files-found: error
+          retention-days: 30
+
+      # ==========================================
+      # 11. Commit DLL and Go dependencies
+      # ==========================================
 
       - name: Commit updated Xray core
+        id: commit
+        if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -195,34 +378,30 @@ jobs:
           git add "XRay-Wrapper/go.sum"
           git add -f "InvisibleMan-XRay/Libraries/XRayCore.dll"
 
-          Write-Host "Git status before commit:"
-          git status --short
+          git diff --cached --quiet
+          $diffExit = $LASTEXITCODE
 
-          if (-not (git diff --cached --quiet)) {
+          if ($diffExit -eq 1) {
               git commit -m "Update bundled Xray core"
 
               if ($LASTEXITCODE -ne 0) {
                   throw "Git commit failed"
               }
           }
+          elseif ($diffExit -ne 0) {
+              throw "Could not inspect staged changes"
+          }
           else {
-              Write-Host "No staged changes to commit"
+              Write-Host "No changes to commit."
           }
 
-          # Проверяем чистоту рабочей директории
-          $status = git status --porcelain
-
-          if ($LASTEXITCODE -ne 0) {
-              throw "Could not inspect Git status"
-          }
-
-          if ($status) {
-              Write-Host "Remaining working-tree changes:"
-              Write-Host $status
-              throw "Working tree is not clean"
-          }
+      # ==========================================
+      # 12. Push changes to master
+      # ==========================================
 
       - name: Sync with latest master and push
+        id: push
+        if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           git fetch origin master
@@ -234,7 +413,7 @@ jobs:
           git rebase origin/master
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Rebase failed. Check conflict details."
+              throw "Git rebase failed"
           }
 
           git push origin HEAD:master
@@ -243,10 +422,57 @@ jobs:
               throw "Git push failed"
           }
 
-      - name: Upload XRayCore.dll artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: XRayCore-current
-          path: XRay-Wrapper/XRayCore.dll
-          if-no-files-found: error
-          retention-days: 30
+          $commitSha = (git rev-parse HEAD).Trim()
+
+          if ($LASTEXITCODE -ne 0 -or -not $commitSha) {
+              throw "Could not determine final commit SHA"
+          }
+
+          Write-Host "Pushed commit: $commitSha"
+
+          "commit_sha=$commitSha" >> $env:GITHUB_OUTPUT
+
+      # ==========================================
+      # 13. Publish GitHub Release
+      # ==========================================
+
+      - name: Create GitHub Release
+        if: steps.latest.outputs.skip != 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.latest.outputs.release_tag }}
+          RELEASE_VERSION: ${{ steps.latest.outputs.version }}
+          UPSTREAM_TAG: ${{ steps.latest.outputs.upstream_tag }}
+          COMMIT_SHA: ${{ steps.push.outputs.commit_sha }}
+          ARCHIVE_PATH: ${{ steps.package.outputs.archive_path }}
+        run: |
+          $notes = @"
+          Automatically built and verified Xray Core release.
+
+          Upstream version: $env:UPSTREAM_TAG
+          Windows architecture: amd64
+          Repository commit: $env:COMMIT_SHA
+
+          Included file:
+          - XRayCore.dll
+
+          Installation:
+          Replace the existing file:
+          Invisible Man XRay\Libraries\XRayCore.dll
+
+          No application executable rebuild is required.
+          "@
+
+          gh release create "$env:RELEASE_TAG" `
+              "$env:ARCHIVE_PATH" `
+              --target "$env:COMMIT_SHA" `
+              --title "XRay Core $env:RELEASE_VERSION" `
+              --notes "$notes" `
+              --latest
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "GitHub Release creation failed"
+          }
+
+          Write-Host "Release successfully published."
