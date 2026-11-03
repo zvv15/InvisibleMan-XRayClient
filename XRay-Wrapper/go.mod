@@ -4,7 +4,7 @@ go 1.27
 
 toolchain go1.27.0
 
-require github.com/xtls/xray-core v1.260327.1-0.20260930074004-b26a91de4f32
+require github.com/xtls/xray-core latest
 
 require (
 	github.com/andybalholm/brotli v1.1.0 // indirect
