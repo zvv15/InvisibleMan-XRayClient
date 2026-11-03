@@ -1,12 +1,15 @@
+
 name: Build XRayCore DLL
 
 on:
   workflow_dispatch:
+
   push:
     branches:
       - master
     paths:
-      - 'XRay-Wrapper/go.mod'   # автосборка только при изменении go.mod
+      - 'XRay-Wrapper/go.mod'
+      - 'XRay-Wrapper/go.sum'
 
 permissions:
   contents: write
@@ -17,6 +20,7 @@ concurrency:
 
 jobs:
   build:
+    if: github.actor != 'github-actions[bot]'
     name: Build Windows x64 XRayCore.dll
     runs-on: windows-latest
 
@@ -35,7 +39,8 @@ jobs:
 
       - name: Show Go version
         shell: pwsh
-        run: go version
+        run: |
+          go version
 
       - name: Update Go dependencies
         shell: pwsh
@@ -55,25 +60,28 @@ jobs:
           CGO_ENABLED: '1'
         run: |
           go build -trimpath -buildmode=c-shared -ldflags="-s -w -buildid=" -o XRayCore.dll .
+
           if ($LASTEXITCODE -ne 0) {
               throw "XRayCore.dll build failed"
           }
 
-      - name: Verify DLL exports
+      - name: Verify DLL file
         shell: pwsh
         run: |
           $dll = "XRay-Wrapper/XRayCore.dll"
 
-          if (-not (Test-Path $dll)) { throw "XRayCore.dll not found" }
+          if (-not (Test-Path $dll)) {
+              throw "XRayCore.dll not found"
+          }
 
           $sizeMB = [math]::Round((Get-Item $dll).Length / 1MB, 2)
+
           Write-Host "XRayCore.dll size: $sizeMB MB"
 
-          # Если DLL весит меньше 5 МБ, значит cgo не подтянул зависимости Xray
           if ($sizeMB -lt 5) {
-              throw "XRayCore.dll is suspiciously small ($sizeMB MB). Build likely failed."
+              throw "XRayCore.dll is suspiciously small ($sizeMB MB)"
           }
-          
+
           Write-Host "DLL size check passed."
 
       - name: Install DLL into application
@@ -91,6 +99,7 @@ jobs:
           }
 
           Copy-Item $source $destination -Force
+
           Write-Host "DLL copied to $destination"
 
       - name: Commit updated Xray core
@@ -108,15 +117,17 @@ jobs:
 
           if (-not (git diff --cached --quiet)) {
               git commit -m "Update bundled Xray core"
+
               if ($LASTEXITCODE -ne 0) {
                   throw "Git commit failed"
               }
-          } else {
+          }
+          else {
               Write-Host "No staged changes to commit"
           }
 
-          # Check for other tracked modifications that could block rebase.
           $status = git status --porcelain
+
           if ($LASTEXITCODE -ne 0) {
               throw "Could not inspect Git status"
           }
@@ -124,31 +135,34 @@ jobs:
           if ($status) {
               Write-Host "Remaining working-tree changes:"
               Write-Host $status
-              throw "Working tree is not clean. Check the files listed above."
+              throw "Working tree is not clean"
           }
 
       - name: Sync with latest master and push
         shell: pwsh
         run: |
           git fetch origin master
+
           if ($LASTEXITCODE -ne 0) {
               throw "Git fetch failed"
           }
 
           git rebase origin/master
+
           if ($LASTEXITCODE -ne 0) {
-              throw "Rebase failed. Check the conflict details in the log."
+              throw "Rebase failed. Check conflict details."
           }
 
           git push origin HEAD:master
+
           if ($LASTEXITCODE -ne 0) {
               throw "Git push failed"
           }
 
-            - name: Upload XRayCore.dll artifact
+      - name: Upload XRayCore.dll artifact
         uses: actions/upload-artifact@v4
         with:
           name: XRayCore-current
           path: XRay-Wrapper/XRayCore.dll
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
