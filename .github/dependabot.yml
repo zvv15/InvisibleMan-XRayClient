@@ -1,14 +1,14 @@
 version: 2
 updates:
-    - package-ecosystem: "gomod"
-        directory: "/XRay-Wrapper"
+  - package-ecosystem: "gomod"
+    directory: "/XRay-Wrapper"
     schedule:
-      interval: "daily" 
-        open-pull-requests-limit: 5
-        labels:
+      interval: "daily"
+    open-pull-requests-limit: 5
+    labels:
       - "dependencies"
       - "go"
-        commit-message:
+    commit-message:
       prefix: "chore(deps)"
     groups:
       xray-core-updates:
