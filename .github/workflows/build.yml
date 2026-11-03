@@ -1,5 +1,5 @@
 
-name: Build XRayCore DLL
+name: Build Xray-core DLL
 
 on:
   workflow_dispatch:
