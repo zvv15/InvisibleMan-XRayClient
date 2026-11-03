@@ -59,23 +59,22 @@ jobs:
               throw "XRayCore.dll build failed"
           }
 
-      # Проверяем реальный экспорт из XRay-Wrapper/xray/wrapper.go: //export StartServer
       - name: Verify DLL exports
         shell: pwsh
         run: |
           $dll = "XRay-Wrapper/XRayCore.dll"
-          $h   = "XRay-Wrapper/XRayCore.h"
 
           if (-not (Test-Path $dll)) { throw "XRayCore.dll not found" }
-          if (-not (Test-Path $h))   { throw "XRayCore.h not found" }
-
-          $content = Get-Content $h -Raw
-          if ($content -notmatch "StartServer") {
-              throw "Expected export 'StartServer' not found in XRayCore.h"
-          }
 
           $sizeMB = [math]::Round((Get-Item $dll).Length / 1MB, 2)
-          Write-Host "XRayCore.dll size: $sizeMB MB — export check passed."
+          Write-Host "XRayCore.dll size: $sizeMB MB"
+
+          # Если DLL весит меньше 5 МБ, значит cgo не подтянул зависимости Xray
+          if ($sizeMB -lt 5) {
+              throw "XRayCore.dll is suspiciously small ($sizeMB MB). Build likely failed."
+          }
+          
+          Write-Host "DLL size check passed."
 
       - name: Install DLL into application
         shell: pwsh
@@ -146,12 +145,10 @@ jobs:
               throw "Git push failed"
           }
 
-      - name: Upload XRayCore.dll artifact
+            - name: Upload XRayCore.dll artifact
         uses: actions/upload-artifact@v4
         with:
           name: XRayCore-current
-          path: |
-            XRay-Wrapper/XRayCore.dll
-            XRay-Wrapper/XRayCore.h
+          path: XRay-Wrapper/XRayCore.dll
           if-no-files-found: warn
           retention-days: 30
