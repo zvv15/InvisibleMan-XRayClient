@@ -3,6 +3,15 @@ name: Build and Release XRayCore
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "Choose workflow mode"
+        type: choice
+        required: true
+        default: release
+        options:
+          - release
+          - validate
 
   schedule:
     - cron: '17 4 * * *'
@@ -28,8 +37,9 @@ jobs:
     runs-on: windows-latest
 
     steps:
+
       # ==========================================
-      # 1. Checkout
+      # 1. Checkout repository
       # ==========================================
 
       - name: Checkout repository
@@ -38,13 +48,29 @@ jobs:
           fetch-depth: 0
 
       # ==========================================
-      # 2. Find latest stable Xray release
+      # 2. Check latest upstream release
       # ==========================================
 
       - name: Check latest Xray-core release
         id: latest
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_MODE: ${{ inputs.mode }}
         run: |
+          $mode = $env:WORKFLOW_MODE
+
+          if ([string]::IsNullOrWhiteSpace($mode)) {
+              $mode = "release"
+          }
+
+          if ($mode -notin @("release", "validate")) {
+              throw "Invalid workflow mode: $mode"
+          }
+
+          Write-Host "Workflow mode: $mode"
+
+          # Получаем последний стабильный релиз Xray-core
           $release = Invoke-RestMethod `
             -Uri "https://api.github.com/repos/XTLS/Xray-core/releases/latest" `
             -Headers @{
@@ -64,19 +90,69 @@ jobs:
           Write-Host "Latest upstream release: $tag"
           Write-Host "Local release tag: $releaseTag"
 
-          # Проверяем, существует ли уже такой Release tag
-          $existingTag = git ls-remote --refs origin "refs/tags/$releaseTag"
+          # Validate only:
+          # Проверяем текущую версию из go.mod без обновления зависимостей,
+          # коммита и публикации Release.
 
-          if ($LASTEXITCODE -ne 0) {
-              throw "Could not check existing release tag"
+          if ($mode -eq "validate") {
+              "skip=false" >> $env:GITHUB_OUTPUT
+              "mode=validate" >> $env:GITHUB_OUTPUT
+              "version=validation" >> $env:GITHUB_OUTPUT
+              "upstream_tag=$tag" >> $env:GITHUB_OUTPUT
+
+              Write-Host "Validation mode selected."
+              exit 0
           }
 
-          if ($existingTag) {
+          # Проверяем наличие опубликованного Release
+          $existingRelease = $null
+
+          $releaseUrl = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/tags/$releaseTag"
+
+          try {
+              $existingRelease = Invoke-RestMethod `
+                -Uri $releaseUrl `
+                -Headers @{
+                  "User-Agent" = "InvisibleMan-XRayClient"
+                  "Accept" = "application/vnd.github+json"
+                  "Authorization" = "Bearer $env:GH_TOKEN"
+                }
+          }
+          catch {
+              $statusCode = 0
+
+              if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                  $statusCode = [int]$_.Exception.Response.StatusCode
+              }
+
+              if ($statusCode -ne 404) {
+                  throw "Could not check existing GitHub Release: $_"
+              }
+          }
+
+          if ($existingRelease) {
+              if ($existingRelease.draft) {
+                  throw "A draft Release already exists for $releaseTag. Resolve it manually."
+              }
+
               Write-Host "Release $releaseTag already exists."
               Write-Host "Nothing to build."
 
               "skip=true" >> $env:GITHUB_OUTPUT
+              "mode=release" >> $env:GITHUB_OUTPUT
+
               exit 0
+          }
+
+          # Если Release отсутствует, проверяем, не занят ли уже тег
+          $existingTag = git ls-remote --refs origin "refs/tags/$releaseTag"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not check existing Git tag"
+          }
+
+          if ($existingTag) {
+              throw "Git tag $releaseTag exists, but its GitHub Release does not. Manual resolution is required."
           }
 
           # Получаем точный commit upstream-релиза
@@ -84,12 +160,12 @@ jobs:
           $peeledRef = "$tagRef^{}"
 
           $lines = git ls-remote `
-              https://github.com/XTLS/Xray-core.git `
-              $tagRef `
-              $peeledRef
+            https://github.com/XTLS/Xray-core.git `
+            $tagRef `
+            $peeledRef
 
           if ($LASTEXITCODE -ne 0) {
-              throw "Could not resolve upstream tag"
+              throw "Could not resolve upstream Xray-core tag"
           }
 
           $tagSha = $null
@@ -108,6 +184,7 @@ jobs:
               }
           }
 
+          # Поддержка аннотированных и обычных Git-тегов
           if (-not $commitSha) {
               $commitSha = $tagSha
           }
@@ -116,9 +193,10 @@ jobs:
               throw "Could not resolve Xray-core commit SHA"
           }
 
-          Write-Host "Upstream commit: $commitSha"
+          Write-Host "Xray-core commit: $commitSha"
 
           "skip=false" >> $env:GITHUB_OUTPUT
+          "mode=release" >> $env:GITHUB_OUTPUT
           "version=$version" >> $env:GITHUB_OUTPUT
           "upstream_tag=$tag" >> $env:GITHUB_OUTPUT
           "release_tag=$releaseTag" >> $env:GITHUB_OUTPUT
@@ -147,7 +225,7 @@ jobs:
       # ==========================================
 
       - name: Update Go dependencies
-        if: steps.latest.outputs.skip != 'true'
+        if: steps.latest.outputs.mode == 'release' && steps.latest.outputs.skip != 'true'
         shell: pwsh
         working-directory: XRay-Wrapper
         env:
@@ -177,13 +255,15 @@ jobs:
           }
 
       # ==========================================
-      # 5. Tests
+      # 5. Run Go tests
       # ==========================================
 
       - name: Run Go tests
         if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         working-directory: XRay-Wrapper
+        env:
+          CGO_ENABLED: '1'
         run: |
           go test ./...
 
@@ -193,10 +273,16 @@ jobs:
 
           Write-Host "All Go tests passed."
 
+      # ==========================================
+      # 6. Run Go vet
+      # ==========================================
+
       - name: Run Go vet
         if: steps.latest.outputs.skip != 'true'
         shell: pwsh
         working-directory: XRay-Wrapper
+        env:
+          CGO_ENABLED: '1'
         run: |
           go vet ./...
 
@@ -207,7 +293,7 @@ jobs:
           Write-Host "Go vet passed."
 
       # ==========================================
-      # 6. Build DLL
+      # 7. Build Windows x64 DLL
       # ==========================================
 
       - name: Build XRayCore.dll
@@ -229,10 +315,17 @@ jobs:
               throw "XRayCore.dll build failed"
           }
 
+          # Удаляем автоматически созданный C header.
+          # Для работы приложения он не требуется.
+
+          if (Test-Path "XRayCore.h") {
+              Remove-Item "XRayCore.h" -Force
+          }
+
           Write-Host "DLL build completed."
 
       # ==========================================
-      # 7. Verify DLL
+      # 8. Verify DLL
       # ==========================================
 
       - name: Verify XRayCore.dll
@@ -254,11 +347,15 @@ jobs:
               throw "DLL is suspiciously small"
           }
 
-          # Проверка PE-заголовка
+          # Проверка DOS/PE заголовков
           $bytes = [System.IO.File]::ReadAllBytes($dll)
 
+          if ($bytes.Length -lt 0x40) {
+              throw "DLL is too small to contain a valid PE header"
+          }
+
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-              throw "Invalid Windows executable header"
+              throw "Invalid DOS header"
           }
 
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
@@ -276,6 +373,7 @@ jobs:
               throw "Invalid PE signature"
           }
 
+          # IMAGE_FILE_MACHINE_AMD64 = 0x8664
           $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
 
           if ($machine -ne 0x8664) {
@@ -289,11 +387,11 @@ jobs:
           Write-Host "DLL verification passed."
 
       # ==========================================
-      # 8. Copy DLL to application
+      # 9. Install DLL into application
       # ==========================================
 
       - name: Install DLL into application
-        if: steps.latest.outputs.skip != 'true'
+        if: steps.latest.outputs.mode == 'release' && steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           $source = "XRay-Wrapper/XRayCore.dll"
@@ -312,7 +410,7 @@ jobs:
           Write-Host "DLL installed into application."
 
       # ==========================================
-      # 9. Create ZIP archive
+      # 10. Create ZIP archive
       # ==========================================
 
       - name: Create release archive
@@ -321,15 +419,22 @@ jobs:
         shell: pwsh
         env:
           CORE_VERSION: ${{ steps.latest.outputs.version }}
+          WORKFLOW_MODE: ${{ steps.latest.outputs.mode }}
         run: |
           $source = "XRay-Wrapper/XRayCore.dll"
-          $archive = Join-Path `
-              $env:RUNNER_TEMP `
-              "XRayCore.$env:CORE_VERSION.zip"
 
           if (-not (Test-Path $source)) {
               throw "DLL not found for packaging"
           }
+
+          if ($env:WORKFLOW_MODE -eq "validate") {
+              $archiveName = "XRayCore.validation.zip"
+          }
+          else {
+              $archiveName = "XRay-Core.$env:CORE_VERSION.zip"
+          }
+
+          $archive = Join-Path $env:RUNNER_TEMP $archiveName
 
           Compress-Archive `
               -LiteralPath $source `
@@ -341,16 +446,37 @@ jobs:
               throw "ZIP archive was not created"
           }
 
+          # Проверяем содержимое архива
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+          $zip = [System.IO.Compression.ZipFile]::OpenRead($archive)
+
+          try {
+              $entry = $zip.Entries |
+                  Where-Object { $_.FullName -eq "XRayCore.dll" }
+
+              if (-not $entry) {
+                  throw "XRayCore.dll is missing from ZIP archive"
+              }
+
+              if ($entry.Length -ne (Get-Item $source).Length) {
+                  throw "DLL size inside ZIP does not match source DLL"
+              }
+          }
+          finally {
+              $zip.Dispose()
+          }
+
           if ((Get-Item $archive).Length -lt 1KB) {
               throw "ZIP archive is invalid or too small"
           }
 
-          Write-Host "Created archive: $archive"
+          Write-Host "Archive verified: $archive"
 
           "archive_path=$archive" >> $env:GITHUB_OUTPUT
 
       # ==========================================
-      # 10. Upload Actions artifact
+      # 11. Upload Actions artifact
       # ==========================================
 
       - name: Upload XRayCore artifact
@@ -363,12 +489,11 @@ jobs:
           retention-days: 30
 
       # ==========================================
-      # 11. Commit DLL and Go dependencies
+      # 12. Commit updated DLL and Go dependencies
       # ==========================================
 
       - name: Commit updated Xray core
-        id: commit
-        if: steps.latest.outputs.skip != 'true'
+        if: steps.latest.outputs.mode == 'release' && steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -395,13 +520,25 @@ jobs:
               Write-Host "No changes to commit."
           }
 
+          # Проверяем рабочую директорию
+          $status = git status --porcelain
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Could not inspect Git status"
+          }
+
+          if ($status) {
+              Write-Host $status
+              throw "Working tree is not clean"
+          }
+
       # ==========================================
-      # 12. Push changes to master
+      # 13. Sync and push master
       # ==========================================
 
       - name: Sync with latest master and push
         id: push
-        if: steps.latest.outputs.skip != 'true'
+        if: steps.latest.outputs.mode == 'release' && steps.latest.outputs.skip != 'true'
         shell: pwsh
         run: |
           git fetch origin master
@@ -433,11 +570,11 @@ jobs:
           "commit_sha=$commitSha" >> $env:GITHUB_OUTPUT
 
       # ==========================================
-      # 13. Publish GitHub Release
+      # 14. Publish GitHub Release
       # ==========================================
 
       - name: Create GitHub Release
-        if: steps.latest.outputs.skip != 'true'
+        if: steps.latest.outputs.mode == 'release' && steps.latest.outputs.skip != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
